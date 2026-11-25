@@ -403,65 +403,39 @@ function installPreviewRuntime(files, pagePath, initialSession) {
     });
   }
 
-  function LocalXMLHttpRequest() {
-    this.native = new nativeXHR();
-    this.listeners = new Map();
-    this.localRequest = null;
-    this.readyState = 0;
+function LocalXMLHttpRequest() {
+  this.native = new nativeXHR();
+  this.listeners = new Map();
+  this.localRequest = null;
+  this.readyState = 0;
+  this.status = 0;
+  this.statusText = "";
+  this.responseText = "";
+  this.response = null;
+  this.responseXML = null;
+  this.responseType = "";
+  this.onreadystatechange = null;
+  this.onload = null;
+  this.onerror = null;
+  this.onloadend = null;
+  this.onabort = null;
+  this.onloadstart = null;
 
-    this.responseType = "";
-    this.onerror = null;
-    this.onabort = null;
-    this.onloadstart = null;
+  for (const type of [
+    "readystatechange", "load", "error", "loadend", "abort", "loadstart"
+  ]) {
+    this.native.addEventListener(type, (event) => {
+      if (typeof this[`on${type}`] === "function") {
+        this[`on${type}`].call(this, event);
+      }
 
-this.status = 200;
-this.statusText = "OK";
-this.responseText =
-  this.method === "HEAD"
-    ? ""
-    : dataUrlText(this.localRequest.dataUrl);
-
-// The simulator expects its third readystatechange callback to be DONE:
-// 1. open() sets OPENED, 2. LOADING here, 3. DONE below.
-this.readyState = LocalXMLHttpRequest.LOADING;
-this.onreadystatechange?.call(this, new Event("readystatechange"));
-
-if (this.responseType === "json") {
-  try {
-    this.response = JSON.parse(this.responseText);
-  } catch {
-    this.response = null;
-  }
-} else if (this.responseType === "document") {
-  this.responseXML = new DOMParser().parseFromString(
-    this.responseText,
-    "application/xml"
-  );
-  this.response = this.responseXML;
-} else {
-  this.response = this.responseText;
-
-  if (/\.xml$/i.test(this.localRequest.path)) {
-    this.responseXML = new DOMParser().parseFromString(
-      this.responseText,
-      "application/xml"
-    );
+      for (const listener of this.listeners.get(type) || []) {
+        if (typeof listener === "function") listener.call(this, event);
+        else listener.handleEvent(event);
+      }
+    });
   }
 }
-
-this.readyState = LocalXMLHttpRequest.DONE;
-this.onreadystatechange?.call(this, new Event("readystatechange"));
-this.onload?.call(this, new Event("load"));
-this.onloadend?.call(this, new Event("loadend"));
-    for (const type of ["readystatechange", "load", "error", "loadend", "abort", "loadstart"]) {
-      this.native.addEventListener(type, (event) => {
-        if (typeof this[`on${type}`] === "function") this[`on${type}`].call(this, event);
-        for (const listener of this.listeners.get(type) || []) {
-          typeof listener === "function" ? listener.call(this, event) : listener.handleEvent(event);
-        }
-      });
-    }
-  }
 
   LocalXMLHttpRequest.UNSENT = 0;
   LocalXMLHttpRequest.OPENED = 1;
@@ -516,38 +490,45 @@ this.onloadend?.call(this, new Event("loadend"));
         return;
       }
 
-      this.status = 200;
-      this.statusText = "OK";
-      this.readyState = LocalXMLHttpRequest.HEADERS_RECEIVED;
-      this.onreadystatechange?.call(this, new Event("readystatechange"));
+this.status = 200;
+this.statusText = "OK";
+this.responseText =
+  this.method === "HEAD"
+    ? ""
+    : dataUrlText(this.localRequest.dataUrl);
 
-      this.readyState = LocalXMLHttpRequest.LOADING;
-      this.onreadystatechange?.call(this, new Event("readystatechange"));
+// open() already emitted OPENED. Emit LOADING, then DONE, so DONE is
+// the third readystatechange callback expected by this simulator.
+this.readyState = LocalXMLHttpRequest.LOADING;
+this.onreadystatechange?.call(this, new Event("readystatechange"));
 
-      this.responseText = this.method === "HEAD"
-        ? ""
-        : dataUrlText(this.localRequest.dataUrl);
+if (this.responseType === "json") {
+  try {
+    this.response = JSON.parse(this.responseText);
+  } catch {
+    this.response = null;
+  }
+} else if (this.responseType === "document") {
+  this.responseXML = new DOMParser().parseFromString(
+    this.responseText,
+    "application/xml"
+  );
+  this.response = this.responseXML;
+} else {
+  this.response = this.responseText;
 
-      if (this.responseType === "json") {
-        try {
-          this.response = JSON.parse(this.responseText);
-        } catch {
-          this.response = null;
-        }
-      } else if (this.responseType === "document") {
-        this.responseXML = new DOMParser().parseFromString(this.responseText, "application/xml");
-        this.response = this.responseXML;
-      } else {
-        this.response = this.responseText;
-        if (/\.xml$/i.test(this.localRequest.path)) {
-          this.responseXML = new DOMParser().parseFromString(this.responseText, "application/xml");
-        }
-      }
+  if (/\.xml$/i.test(this.localRequest.path)) {
+    this.responseXML = new DOMParser().parseFromString(
+      this.responseText,
+      "application/xml"
+    );
+  }
+}
 
-      this.readyState = LocalXMLHttpRequest.DONE;
-      this.onreadystatechange?.call(this, new Event("readystatechange"));
-      this.onload?.call(this, new Event("load"));
-      this.onloadend?.call(this, new Event("loadend"));
+this.readyState = LocalXMLHttpRequest.DONE;
+this.onreadystatechange?.call(this, new Event("readystatechange"));
+this.onload?.call(this, new Event("load"));
+this.onloadend?.call(this, new Event("loadend"));
     }, 0);
   };
 
