@@ -1169,11 +1169,7 @@ function installPreviewRuntime(
         return;
       }
 
-      if (
-        event.key
-          .toLowerCase() ===
-        "a"
-      ) {
+      if (event.key === "a" || event.key === "A") {
         reloadSequence =
           1;
 
