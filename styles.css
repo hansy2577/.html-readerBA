@@ -4,14 +4,14 @@
 
 body {
   margin: 0;
-  padding: 2rem;
+  padding: 1.5rem;
   color: #202124;
   background: #fff;
   font: 16px/1.5 system-ui, sans-serif;
 }
 
 main {
-  max-width: 900px;
+  max-width: 1200px;
   margin: 0 auto;
 }
 
@@ -44,23 +44,12 @@ button:disabled {
   color: #555;
 }
 
-article {
-  margin: 1rem 0;
-  border-top: 1px solid #ddd;
-}
-
-article h2 {
-  overflow-wrap: anywhere;
-  font-size: 1rem;
-}
-
-pre {
-  overflow: auto;
-  max-height: 32rem;
-  padding: 0.75rem;
-  background: #f6f6f6;
-  white-space: pre-wrap;
-  overflow-wrap: anywhere;
+#output iframe {
+  display: block;
+  width: 100%;
+  min-height: 75vh;
+  border: 1px solid #bbb;
+  background: white;
 }
 
 @media (max-width: 480px) {

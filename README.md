@@ -1,11 +1,9 @@
-# Local File Viewer
+# Local Website Preview
 
-A small browser-only app for importing a local folder and viewing text-based files, including XML, in the page.
+A small browser-only tool for previewing a local website from an imported folder.
 
-## Run
+## Use
 
-Open `index.html` in a modern browser, choose **Import folder**, select a folder, then choose **Load**. The browser asks for permission through its normal folder picker; files stay on your device.
+Open `index.html` in a modern browser, choose **Import folder**, select the website folder, then choose **Load**. The app looks for `index.html` (or `index.htm`) and displays it in a sandboxed iframe. Local script, stylesheet, image, and other linked file URLs are mapped to files from the selected folder. No files are uploaded and there are no dependencies or build step.
 
-Text files are read through `XMLHttpRequest` using temporary object URLs. Common text formats are previewed; other files show their file size. No dependencies or build step are needed.
-
-Folder selection (`webkitdirectory`) is supported by current Chromium-based browsers and Safari. Browser support and behavior may vary.
+For safety, the preview is sandboxed and cannot access the viewer page. Browser support for folder selection (`webkitdirectory`) may vary. Previews relying on server-side behavior, server-relative routes, or JavaScript `fetch()` requests may not work when loaded directly from local files.
