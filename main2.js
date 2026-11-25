@@ -242,6 +242,14 @@ async function prepareHtml(html, pagePath, session = {}, depth = 0) {
     );
   }
 
+for (const element of parsed.querySelectorAll("*")) {
+  for (const attribute of Array.from(element.attributes)) {
+    if (attribute.name.toLowerCase().startsWith("on")) {
+      element.setAttribute(attribute.name, rewriteNavigation(attribute.value));
+    }
+  }
+}
+  
   const runtime = parsed.createElement("script");
   runtime.textContent =
     `(${installPreviewRuntime.toString()})` +
@@ -250,6 +258,7 @@ async function prepareHtml(html, pagePath, session = {}, depth = 0) {
     `${safeJson(session)});`;
 
   parsed.head.prepend(runtime);
+  
   return `<!doctype html>\n${parsed.documentElement.outerHTML}`;
 }
 
@@ -399,18 +408,48 @@ function installPreviewRuntime(files, pagePath, initialSession) {
     this.listeners = new Map();
     this.localRequest = null;
     this.readyState = 0;
-    this.status = 0;
-    this.statusText = "";
-    this.responseText = "";
-    this.response = null;
-    this.responseXML = null;
+
     this.responseType = "";
-    this.onreadystatechange = null;
-    this.onload = null;
     this.onerror = null;
-    this.onloadend = null;
     this.onabort = null;
     this.onloadstart = null;
+
+this.status = 200;
+this.statusText = "OK";
+this.responseText =
+  this.method === "HEAD"
+    ? ""
+    : dataUrlText(this.localRequest.dataUrl);
+
+this.readyState = LocalXMLHttpRequest.LOADING;
+this.onreadystatechange?.call(this, new Event("readystatechange"));
+
+if (this.responseType === "json") {
+  try {
+    this.response = JSON.parse(this.responseText);
+  } catch {
+    this.response = null;
+  }
+} else if (this.responseType === "document") {
+  this.responseXML = new DOMParser().parseFromString(
+    this.responseText,
+    "application/xml"
+  );
+  this.response = this.responseXML;
+} else {
+  this.response = this.responseText;
+  if (/\.xml$/i.test(this.localRequest.path)) {
+    this.responseXML = new DOMParser().parseFromString(
+      this.responseText,
+      "application/xml"
+    );
+  }
+}
+
+this.readyState = LocalXMLHttpRequest.DONE;
+this.onreadystatechange?.call(this, new Event("readystatechange"));
+this.onload?.call(this, new Event("load"));
+this.onloadend?.call(this, new Event("loadend"));
 
     for (const type of ["readystatechange", "load", "error", "loadend", "abort", "loadstart"]) {
       this.native.addEventListener(type, (event) => {
@@ -541,11 +580,13 @@ function rewriteNavigation(source) {
   return source
     .replace(
       /\b(?:window\.)?location(?:\.href)?\s*=\s*(["'`])([^"'`]+)\1/g,
-      (_match, _quote, path) => `window.__localNavigate(${JSON.stringify(path)})`
+      (_match, _quote, path) =>
+        `window.__localNavigate(${JSON.stringify(path)})`
     )
     .replace(
       /\b(?:window\.)?location\.(?:assign|replace)\(\s*(["'`])([^"'`]+)\1\s*\)/g,
-      (_match, _quote, path) => `window.__localNavigate(${JSON.stringify(path)})`
+      (_match, _quote, path) =>
+        `window.__localNavigate(${JSON.stringify(path)})`
     );
 }
 
