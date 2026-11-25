@@ -52,6 +52,32 @@ button:disabled {
   background: white;
 }
 
+body.preview-mode {
+  padding: 0;
+  overflow: hidden;
+}
+
+body.preview-mode main {
+  max-width: none;
+  margin: 0;
+}
+
+body.preview-mode h1,
+body.preview-mode .actions,
+body.preview-mode #status {
+  display: none;
+}
+
+body.preview-mode #output iframe {
+  position: fixed;
+  inset: 0;
+  z-index: 9999;
+  width: 100vw;
+  height: 100vh;
+  min-height: 100vh;
+  border: 0;
+}
+
 @media (max-width: 480px) {
   body {
     padding: 1rem;
