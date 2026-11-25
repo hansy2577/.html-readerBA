@@ -4,7 +4,7 @@ const folderInput = document.querySelector("#folder-input");
 const status = document.querySelector("#status");
 const output = document.querySelector("#output");
 
-alert("hello55")
+alert("hello55");
 
 let selectedFiles = [];
 let dataUrlByPath = new Map();
