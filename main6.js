@@ -4,7 +4,7 @@ const folderInput = document.querySelector("#folder-input");
 const status = document.querySelector("#status");
 const output = document.querySelector("#output");
 
-let selectedFiles = []
+let selectedFiles = [];
 let dataUrlByPath = new Map();
 let previewFrame = null;
 
@@ -22,7 +22,7 @@ folderInput.addEventListener("change", () => {
   }
 
   status.textContent =
-    `${selectedFiles.length} file${selectedFiles.length === 1 ? "" : "s"} selected. Press Load to preview index.html.`;
+    `${selectedFiles.length} file${selectedFiles.length === 1 ? "" : "s"} selected.`;
   loadButton.disabled = false;
 });
 
@@ -38,7 +38,7 @@ loadButton.addEventListener("click", async () => {
 
   importButton.disabled = true;
   loadButton.disabled = true;
-  status.textContent = "Preparing website preview…";
+  status.textContent = "Preparing preview...";
   output.replaceChildren();
 
   try {
@@ -52,7 +52,7 @@ loadButton.addEventListener("click", async () => {
     }
 
     const previewEntry = await findInitialPreviewFile(entry);
-    const previewHtml = await prepareHtml(
+    const html = await prepareHtml(
       await previewEntry.text(),
       normalizePath(previewEntry.webkitRelativePath),
       {},
@@ -62,12 +62,12 @@ loadButton.addEventListener("click", async () => {
     previewFrame = document.createElement("iframe");
     previewFrame.title = `Preview of ${previewEntry.webkitRelativePath}`;
     previewFrame.setAttribute("sandbox", "allow-scripts");
-    previewFrame.srcdoc = previewHtml;
+    previewFrame.srcdoc = html;
     output.append(previewFrame);
 
     document.body.classList.add("preview-mode");
     status.textContent =
-      `Previewing ${previewEntry.webkitRelativePath}. Press Esc to return.`;
+      `Previewing ${previewEntry.webkitRelativePath}. Press Escape to return.`;
   } catch (error) {
     status.textContent = `Could not prepare preview: ${error.message}`;
   } finally {
@@ -87,30 +87,27 @@ window.addEventListener("message", async (event) => {
     return;
   }
 
-  const targetPath = normalizePath(message.path);
   const target = selectedFiles.find(
-    (file) => normalizePath(file.webkitRelativePath) === targetPath
+    (file) => normalizePath(file.webkitRelativePath) === normalizePath(message.path)
   );
 
   if (!target || !/\.html?$/i.test(target.name)) {
-    status.textContent = `Local page not found: ${targetPath}`;
+    status.textContent = `Local page not found: ${message.path}`;
     return;
   }
 
   try {
-    status.textContent = `Loading ${targetPath}…`;
-
     const html = await prepareHtml(
       await target.text(),
-      targetPath,
+      normalizePath(target.webkitRelativePath),
       message.session || {},
       0
     );
 
     previewFrame.srcdoc = html;
-    status.textContent = `Previewing ${targetPath}.`;
+    status.textContent = `Previewing ${target.webkitRelativePath}.`;
   } catch (error) {
-    status.textContent = `Could not load ${targetPath}: ${error.message}`;
+    status.textContent = `Could not load ${target.webkitRelativePath}: ${error.message}`;
   }
 });
 
@@ -138,6 +135,7 @@ async function prepareHtml(html, pagePath, session = {}, depth = 0) {
   const pageDirectory = directoryOf(pagePath);
   const folderRoot = rootOf(pagePath);
 
+  // CSS files
   for (const file of selectedFiles.filter((item) =>
     /\.css$/i.test(item.name)
   )) {
@@ -156,13 +154,16 @@ async function prepareHtml(html, pagePath, session = {}, depth = 0) {
 
   parsed.querySelectorAll("base").forEach((base) => base.remove());
 
+  // Scripts
   for (const script of Array.from(parsed.querySelectorAll("script[src]"))) {
     const src = script.getAttribute("src");
+
+    if (isExternalUrl(src)) continue;
+
     const path = resolvePath(src, pageDirectory, folderRoot);
     const file = findFile(path);
 
     if (!file) {
-      if (isExternalUrl(src)) continue;
       script.remove();
       continue;
     }
@@ -192,6 +193,7 @@ async function prepareHtml(html, pagePath, session = {}, depth = 0) {
     }
   }
 
+  // HTML assets
   for (const element of parsed.querySelectorAll(
     "[src], [href], [poster], [srcset], [style]"
   )) {
@@ -203,15 +205,16 @@ async function prepareHtml(html, pagePath, session = {}, depth = 0) {
         const childFile = findFile(childPath);
 
         if (childFile && /\.html?$/i.test(childFile.name)) {
-          const childHtml = await prepareHtml(
-            await childFile.text(),
-            normalizePath(childFile.webkitRelativePath),
-            session,
-            depth + 1
-          );
-
           element.removeAttribute("src");
-          element.setAttribute("srcdoc", childHtml);
+          element.setAttribute(
+            "srcdoc",
+            await prepareHtml(
+              await childFile.text(),
+              normalizePath(childFile.webkitRelativePath),
+              session,
+              depth + 1
+            )
+          );
           continue;
         }
       }
@@ -268,6 +271,7 @@ async function prepareHtml(html, pagePath, session = {}, depth = 0) {
     );
   }
 
+  // Inline event handlers
   for (const element of parsed.querySelectorAll("*")) {
     for (const attribute of Array.from(element.attributes)) {
       if (attribute.name.toLowerCase().startsWith("on")) {
@@ -313,16 +317,20 @@ function installPreviewRuntime(files, pagePath, initialSession) {
   }
 
   function localPath(value) {
+    const raw = String(value || "").trim();
+
     if (
-      !value ||
-      /^(?:[a-z][a-z\d+.-]*:|\/\/|#)/i.test(value)
+      !raw ||
+      /^(?:[a-z][a-z\d+.-]*:|\/\/|#)/i.test(raw)
     ) {
       return null;
     }
 
     try {
-      const base = `https://preview.invalid/${pagePath}`;
-      const url = new URL(value, base);
+      const url = new URL(
+        raw,
+        `https://preview.invalid/${pagePath}`
+      );
 
       if (url.origin !== "https://preview.invalid") return null;
 
@@ -330,8 +338,24 @@ function installPreviewRuntime(files, pagePath, initialSession) {
         decodeURIComponent(url.pathname).replace(/^\/+/, "")
       );
 
+      const pageDirectory = pagePath.includes("/")
+        ? pagePath.slice(0, pagePath.lastIndexOf("/") + 1)
+        : "";
+
+      const candidates = [path];
+
+      if (raw.startsWith("/")) {
+        candidates.push(normalize(`${pageDirectory}${path}`));
+      }
+
+      candidates.push(normalize(`${root()}${path}`));
+
+      const resolvedPath = candidates.find((candidate) =>
+        Object.hasOwn(files, candidate)
+      );
+
       return {
-        path: files[path] ? path : normalize(`${root()}${path}`),
+        path: resolvedPath || candidates[0],
         query: url.search,
         hash: url.hash
       };
@@ -343,7 +367,11 @@ function installPreviewRuntime(files, pagePath, initialSession) {
   function lookup(value) {
     const result = localPath(value);
     if (!result || !files[result.path]) return null;
-    return { ...result, dataUrl: files[result.path] };
+
+    return {
+      ...result,
+      dataUrl: files[result.path]
+    };
   }
 
   function dataUrlText(dataUrl) {
@@ -423,7 +451,6 @@ function installPreviewRuntime(files, pagePath, initialSession) {
     const link = event.target.closest("a[data-local-target]");
     if (!link) return;
 
-    event.preventEvent?.();
     event.preventDefault();
     navigate(link.dataset.localTarget);
   }, true);
@@ -433,27 +460,35 @@ function installPreviewRuntime(files, pagePath, initialSession) {
     return found ? found.dataUrl : value;
   }
 
-  for (const Constructor of [
-    window.HTMLImageElement,
-    window.HTMLScriptElement,
-    window.HTMLAudioElement,
-    window.HTMLSourceElement,
-    window.HTMLIFrameElement
-  ]) {
-    if (!Constructor) continue;
+  function rewriteCssUrls(cssText) {
+    return cssText.replace(
+      /url\(\s*(['"]?)(.*?)\1\s*\)/gi,
+      (match, quote, value) => {
+        const rewritten =
+          rewriteDynamicUrl(value.trim());
 
+        return `url(${quote}${rewritten}${quote})`;
+      }
+    );
+  }
+
+  const sourcePrototypes = [
+    window.HTMLImageElement?.prototype,
+    window.HTMLScriptElement?.prototype,
+    window.HTMLMediaElement?.prototype,
+    window.HTMLSourceElement?.prototype,
+    window.HTMLIFrameElement?.prototype
+  ].filter(Boolean);
+
+  for (const prototype of new Set(sourcePrototypes)) {
     const descriptor =
-      Object.getOwnPropertyDescriptor(
-        Constructor.prototype,
-        "src"
-      );
+      Object.getOwnPropertyDescriptor(prototype, "src");
 
     if (!descriptor?.get || !descriptor?.set) continue;
 
-    Object.defineProperty(Constructor.prototype, "src", {
+    Object.defineProperty(prototype, "src", {
       configurable: true,
       enumerable: descriptor.enumerable,
-
       get: descriptor.get,
 
       set(value) {
@@ -470,10 +505,77 @@ function installPreviewRuntime(files, pagePath, initialSession) {
           }
         }
 
-        descriptor.set.call(this, rewriteDynamicUrl(value));
+        descriptor.set.call(
+          this,
+          rewriteDynamicUrl(value)
+        );
       }
     });
   }
+
+  const NativeAudio = window.Audio;
+
+  window.Audio = function Audio(src) {
+    const audio = new NativeAudio();
+
+    if (src != null && src !== "") {
+      audio.src = rewriteDynamicUrl(src);
+    }
+
+    return audio;
+  };
+
+  window.Audio.prototype = NativeAudio.prototype;
+
+  const styleObserver = new MutationObserver((mutations) => {
+    for (const mutation of mutations) {
+      const element = mutation.target;
+      const cssText = element.getAttribute("style");
+
+      if (!cssText) continue;
+
+      const rewritten =
+        rewriteCssUrls(cssText);
+
+      if (rewritten !== cssText) {
+        element.setAttribute("style", rewritten);
+      }
+    }
+  });
+
+  styleObserver.observe(document.documentElement, {
+    attributes: true,
+    attributeFilter: ["style"],
+    subtree: true
+  });
+
+  const assetObserver = new MutationObserver((mutations) => {
+    for (const mutation of mutations) {
+      const element = mutation.target;
+      const attribute = mutation.attributeName;
+
+      if (attribute !== "src" && attribute !== "poster") {
+        continue;
+      }
+
+      const value = element.getAttribute(attribute);
+
+      if (!value || value.startsWith("data:")) continue;
+
+      const rewritten =
+        rewriteDynamicUrl(value);
+
+      if (rewritten !== value) {
+        element.setAttribute(attribute, rewritten);
+      }
+    }
+  });
+
+  assetObserver.observe(document.documentElement, {
+    attributes: true,
+    attributeFilter: ["src", "poster"],
+    subtree: true
+  });
 
   function LocalXMLHttpRequest() {
     this.native = new nativeXHR();
@@ -540,94 +642,99 @@ function installPreviewRuntime(files, pagePath, initialSession) {
       );
     };
 
-  LocalXMLHttpRequest.prototype.send = function (body = null) {
-  if (this._nativeMode) {
-    this.native.send(body);
-    return;
-  }
-
-  if (this.async === false) {
-    throw new DOMException(
-      "Synchronous local XHR is not supported.",
-      "InvalidAccessError"
-    );
-  }
-
-  const emit = (type) => {
-    const event = new Event(type);
-
-    if (typeof this[`on${type}`] === "function") {
-      this[`on${type}`].call(this, event);
-    }
-
-    for (const listener of this.listeners.get(type) || []) {
-      if (typeof listener === "function") {
-        listener.call(this, event);
-      } else {
-        listener.handleEvent(event);
+  LocalXMLHttpRequest.prototype.send =
+    function (body = null) {
+      if (this._nativeMode) {
+        this.native.send(body);
+        return;
       }
-    }
-  };
 
-  emit("loadstart");
-
-  setTimeout(() => {
-    if (this.method !== "GET" && this.method !== "HEAD") {
-      this.status = 405;
-      this.statusText = "Method Not Allowed";
-      this.readyState = LocalXMLHttpRequest.DONE;
-      emit("readystatechange");
-      emit("error");
-      emit("loadend");
-      return;
-    }
-
-    this.status = 200;
-    this.statusText = "OK";
-    this.responseText =
-      this.method === "HEAD"
-        ? ""
-        : dataUrlText(this.localRequest.dataUrl);
-
-    // The simulator registers onreadystatechange after open(), so it counts
-    // these three send() callbacks: HEADERS_RECEIVED, LOADING, then DONE.
-    this.readyState = LocalXMLHttpRequest.HEADERS_RECEIVED;
-    emit("readystatechange");
-
-    this.readyState = LocalXMLHttpRequest.LOADING;
-    emit("readystatechange");
-
-    if (this.responseType === "json") {
-      try {
-        this.response = JSON.parse(this.responseText);
-      } catch {
-        this.response = null;
-      }
-    } else if (this.responseType === "document") {
-      this.responseXML = new DOMParser().parseFromString(
-        this.responseText,
-        "application/xml"
-      );
-      this.response = this.responseXML;
-    } else {
-      this.response = this.responseText;
-
-      if (/\.xml$/i.test(this.localRequest.path)) {
-        this.responseXML = new DOMParser().parseFromString(
-          this.responseText,
-          "application/xml"
+      if (this.async === false) {
+        throw new DOMException(
+          "Synchronous local XHR is not supported.",
+          "InvalidAccessError"
         );
       }
-    }
 
-    this.readyState = LocalXMLHttpRequest.DONE;
-    emit("readystatechange");
-    emit("load");
-    emit("loadend");
-  }, 0);
-};
-  
-   LocalXMLHttpRequest.prototype.abort =
+      const emit = (type) => {
+        const event = new Event(type);
+
+        if (typeof this[`on${type}`] === "function") {
+          this[`on${type}`].call(this, event);
+        }
+
+        for (const listener of this.listeners.get(type) || []) {
+          if (typeof listener === "function") {
+            listener.call(this, event);
+          } else {
+            listener.handleEvent(event);
+          }
+        }
+      };
+
+      emit("loadstart");
+
+      setTimeout(() => {
+        if (
+          this.method !== "GET" &&
+          this.method !== "HEAD"
+        ) {
+          this.status = 405;
+          this.statusText = "Method Not Allowed";
+          this.readyState = LocalXMLHttpRequest.DONE;
+          emit("readystatechange");
+          emit("error");
+          emit("loadend");
+          return;
+        }
+
+        this.status = 200;
+        this.statusText = "OK";
+        this.responseText =
+          this.method === "HEAD"
+            ? ""
+            : dataUrlText(this.localRequest.dataUrl);
+
+        this.readyState = LocalXMLHttpRequest.HEADERS_RECEIVED;
+        emit("readystatechange");
+
+        this.readyState = LocalXMLHttpRequest.LOADING;
+        emit("readystatechange");
+
+        if (this.responseType === "json") {
+          try {
+            this.response =
+              JSON.parse(this.responseText);
+          } catch {
+            this.response = null;
+          }
+        } else if (this.responseType === "document") {
+          this.responseXML =
+            new DOMParser().parseFromString(
+              this.responseText,
+              "application/xml"
+            );
+          this.response = this.responseXML;
+        } else {
+          this.response = this.responseText;
+
+          if (/\.xml$/i.test(this.localRequest.path)) {
+            this.responseXML =
+              new DOMParser().parseFromString(
+                this.responseText,
+                "application/xml"
+              );
+          }
+        }
+
+        this.readyState = LocalXMLHttpRequest.DONE;
+        emit("readystatechange");
+        emit("load");
+        emit("loadend");
+      }, 0);
+    };
+
+  LocalXMLHttpRequest.prototype.abort =
     function () {
       if (this._nativeMode) {
         this.native.abort();
@@ -657,8 +764,9 @@ function installPreviewRuntime(files, pagePath, initialSession) {
 
       if (String(name).toLowerCase() === "content-type") {
         return (
-          this.localRequest.dataUrl.match(/^data:([^;,]*)/)?.[1] ||
-          "text/plain"
+          this.localRequest.dataUrl.match(
+            /^data:([^;,]*)/
+          )?.[1] || "text/plain"
         );
       }
 
@@ -703,7 +811,12 @@ function rewriteCss(css, baseDirectory, folderRoot) {
     /url\(\s*(['"]?)(.*?)\1\s*\)/gi,
     (match, quote, value) => {
       const rewritten =
-        resolveAssetUrl(value, baseDirectory, folderRoot);
+        resolveAssetUrl(
+          value,
+          baseDirectory,
+          folderRoot
+        );
+
       return `url(${quote}${rewritten}${quote})`;
     }
   );
@@ -713,7 +826,8 @@ function rewriteSrcset(value, baseDirectory, folderRoot) {
   return value
     .split(",")
     .map((candidate) => {
-      const parts = candidate.trim().split(/\s+/);
+      const parts =
+        candidate.trim().split(/\s+/);
 
       if (parts[0]) {
         parts[0] = resolveAssetUrl(
@@ -728,7 +842,11 @@ function rewriteSrcset(value, baseDirectory, folderRoot) {
     .join(", ");
 }
 
-function resolveAssetUrl(value, baseDirectory, folderRoot) {
+function resolveAssetUrl(
+  value,
+  baseDirectory,
+  folderRoot
+) {
   const path = resolvePath(
     value,
     baseDirectory,
@@ -738,33 +856,50 @@ function resolveAssetUrl(value, baseDirectory, folderRoot) {
   return dataUrlByPath.get(path) || value;
 }
 
-function resolvePath(value, baseDirectory, folderRoot) {
-  const trimmed = String(value).trim();
+function resolvePath(
+  value,
+  baseDirectory,
+  folderRoot
+) {
+  const raw = String(value || "").trim();
 
   if (
-    !trimmed ||
-    isExternalUrl(trimmed) ||
-    trimmed.startsWith("#")
+    !raw ||
+    isExternalUrl(raw) ||
+    raw.startsWith("#")
   ) {
     return "";
   }
 
   try {
     const url = new URL(
-      trimmed,
+      raw,
       `https://preview.invalid/${baseDirectory}`
     );
 
-    if (url.origin !== "https://preview.invalid") return "";
+    if (url.origin !== "https://preview.invalid") {
+      return "";
+    }
 
     const path = normalizePath(
       decodeURIComponent(url.pathname).replace(/^\/+/, "")
     );
 
-    if (dataUrlByPath.has(path)) return path;
+    const candidates = [path];
 
-    const rooted = normalizePath(`${folderRoot}${path}`);
-    return dataUrlByPath.has(rooted) ? rooted : path;
+    if (raw.startsWith("/")) {
+      candidates.push(
+        normalizePath(`${baseDirectory}${path}`)
+      );
+    }
+
+    candidates.push(
+      normalizePath(`${folderRoot}${path}`)
+    );
+
+    return candidates.find((candidate) =>
+      dataUrlByPath.has(candidate)
+    ) || candidates[0];
   } catch {
     return "";
   }
@@ -807,7 +942,6 @@ function normalizePath(path) {
 
   for (const part of String(path).replaceAll("\\", "/").split("/")) {
     if (!part || part === ".") continue;
-
     if (part === "..") parts.pop();
     else parts.push(part);
   }
@@ -832,7 +966,8 @@ function fileToDataUrl(file) {
   return new Promise((resolve, reject) => {
     const reader = new FileReader();
 
-    reader.onload = () => resolve(reader.result);
+    reader.onload = () =>
+      resolve(reader.result);
 
     reader.onerror = () =>
       reject(
