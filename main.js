@@ -4,7 +4,9 @@ const folderInput = document.querySelector("#folder-input");
 const status = document.querySelector("#status");
 const output = document.querySelector("#output");
 
-alert("hello4")
+alert("hello55")
+
+
 
 let selectedFiles = [];
 let dataUrlByPath = new Map();
@@ -43,37 +45,41 @@ loadButton.addEventListener("click", async () => {
   output.replaceChildren();
   status.textContent = "Preparing website preview…";
 
-  try {
-    dataUrlByPath = new Map();
+try {
+  dataUrlByPath = new Map();
 
-    for (const file of selectedFiles) {
-      dataUrlByPath.set(
-        normalizePath(file.webkitRelativePath),
-        await fileToDataUrl(file)
-      );
-    }
-
-    const previewHtml = await prepareHtml(
-      await entry.text(),
-      entry.webkitRelativePath,
-      {},
-      0
+  for (const file of selectedFiles) {
+    dataUrlByPath.set(
+      normalizePath(file.webkitRelativePath),
+      await fileToDataUrl(file)
     );
-
-    previewFrame = document.createElement("iframe");
-    previewFrame.title = `Preview of ${entry.webkitRelativePath}`;
-    previewFrame.setAttribute("sandbox", "allow-scripts");
-    output.append(previewFrame);
-    previewFrame.srcdoc = previewHtml;
-
-    status.textContent =
-      `Previewing ${entry.webkitRelativePath}. The page runs in a sandbox.`;
-  } catch (error) {
-    status.textContent = `Could not prepare preview: ${error.message}`;
-  } finally {
-    importButton.disabled = false;
-    loadButton.disabled = false;
   }
+
+  // If index.html is only wrapping a local page in an iframe,
+  // preview that page directly in the one preview frame.
+  const previewEntry = await findInitialPreviewFile(entry);
+
+  const previewHtml = await prepareHtml(
+    await previewEntry.text(),
+    normalizePath(previewEntry.webkitRelativePath),
+    {},
+    0
+  );
+
+  previewFrame = document.createElement("iframe");
+  previewFrame.title = `Preview of ${previewEntry.webkitRelativePath}`;
+  previewFrame.setAttribute("sandbox", "allow-scripts");
+  previewFrame.srcdoc = previewHtml;
+  output.append(previewFrame);
+
+  document.body.classList.add("preview-mode");
+  status.textContent = `Previewing ${previewEntry.webkitRelativePath}. Press Esc to return.`;
+} catch (error) {
+  status.textContent = `Could not prepare preview: ${error.message}`;
+} finally {
+  importButton.disabled = false;
+  loadButton.disabled = false;
+}
 });
 
 // A local page can request navigation through postMessage. Validate that the
@@ -106,6 +112,23 @@ window.addEventListener("message", async (event) => {
     status.textContent = `Could not load ${targetPath}: ${error.message}`;
   }
 });
+
+async function findInitialPreviewFile(entry) {
+  const html = await entry.text();
+  const parsed = new DOMParser().parseFromString(html, "text/html");
+  const wrapperFrame = parsed.querySelector("iframe[src]");
+
+  if (!wrapperFrame) return entry;
+
+  const path = resolvePath(
+    wrapperFrame.getAttribute("src"),
+    directoryOf(normalizePath(entry.webkitRelativePath)),
+    rootOf(normalizePath(entry.webkitRelativePath))
+  );
+
+  const file = path && findFile(path);
+  return file && /\.html?$/i.test(file.name) ? file : entry;
+}
 
 async function prepareHtml(html, pagePath, session = {}, depth = 0) {
   const parsed = new DOMParser().parseFromString(html, "text/html");
@@ -599,6 +622,12 @@ function normalizePath(path) {
 function safeJson(value) {
   return JSON.stringify(value).replace(/</g, "\\u003c");
 }
+
+window.addEventListener("keydown", (event) => {
+  if (event.key === "Escape") {
+    document.body.classList.remove("preview-mode");
+  }
+});
 
 function fileToDataUrl(file) {
   return new Promise((resolve, reject) => {
