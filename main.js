@@ -4,25 +4,27 @@ const folderInput = document.querySelector("#folder-input");
 const status = document.querySelector("#status");
 const output = document.querySelector("#output");
 
-alert("hello3")
+alert("hello4")
 
 let selectedFiles = [];
+let dataUrlByPath = new Map();
+let previewFrame = null;
 
 importButton.addEventListener("click", () => folderInput.click());
 
 folderInput.addEventListener("change", () => {
   selectedFiles = Array.from(folderInput.files);
   output.replaceChildren();
+  previewFrame = null;
 
-  const count = selectedFiles.length;
-  if (!count) {
+  if (!selectedFiles.length) {
     status.textContent = "No folder selected.";
     loadButton.disabled = true;
     return;
   }
 
   status.textContent =
-    `${count} file${count === 1 ? "" : "s"} selected. Press Load to preview index.html.`;
+    `${selectedFiles.length} file${selectedFiles.length === 1 ? "" : "s"} selected. Press Load to preview index.html.`;
   loadButton.disabled = false;
 });
 
@@ -36,13 +38,13 @@ loadButton.addEventListener("click", async () => {
     return;
   }
 
-  loadButton.disabled = true;
   importButton.disabled = true;
-  status.textContent = "Preparing website preview…";
+  loadButton.disabled = true;
   output.replaceChildren();
+  status.textContent = "Preparing website preview…";
 
   try {
-    const dataUrlByPath = new Map();
+    dataUrlByPath = new Map();
 
     for (const file of selectedFiles) {
       dataUrlByPath.set(
@@ -51,69 +53,147 @@ loadButton.addEventListener("click", async () => {
       );
     }
 
-    const html = await entry.text();
     const previewHtml = await prepareHtml(
-      html,
+      await entry.text(),
       entry.webkitRelativePath,
-      dataUrlByPath
+      {},
+      0
     );
 
-    const frame = document.createElement("iframe");
-    frame.title = `Preview of ${entry.webkitRelativePath}`;
-    frame.setAttribute("sandbox", "allow-scripts");
-    frame.srcdoc = previewHtml;
-    output.append(frame);
+    previewFrame = document.createElement("iframe");
+    previewFrame.title = `Preview of ${entry.webkitRelativePath}`;
+    previewFrame.setAttribute("sandbox", "allow-scripts");
+    output.append(previewFrame);
+    previewFrame.srcdoc = previewHtml;
 
     status.textContent =
       `Previewing ${entry.webkitRelativePath}. The page runs in a sandbox.`;
   } catch (error) {
     status.textContent = `Could not prepare preview: ${error.message}`;
   } finally {
-    loadButton.disabled = false;
     importButton.disabled = false;
+    loadButton.disabled = false;
   }
 });
 
-async function prepareHtml(html, entryPath, dataUrlByPath) {
-  const parsed = new DOMParser().parseFromString(html, "text/html");
-  const entryDirectory = directoryOf(entryPath);
-  const folderRoot = rootOf(entryPath);
+// A local page can request navigation through postMessage. Validate that the
+// requested destination is an imported HTML file before loading it.
+window.addEventListener("message", async (event) => {
+  const message = event.data;
+  if (!message || message.type !== "local-preview:navigate" || !previewFrame) return;
 
-  // Rewrite stylesheets and their local asset references.
-  for (const stylesheet of selectedFiles.filter((file) =>
-    /\.css$/i.test(file.name)
-  )) {
-    const path = normalizePath(stylesheet.webkitRelativePath);
-    const css = await stylesheet.text();
-    const rewrittenCss = rewriteCss(
-      css,
-      directoryOf(path),
-      folderRoot,
-      dataUrlByPath
+  const targetPath = normalizePath(message.path);
+  const target = selectedFiles.find(
+    (file) => normalizePath(file.webkitRelativePath) === targetPath
+  );
+
+  if (!target || !/\.html?$/i.test(target.name)) {
+    status.textContent = `Local page not found: ${targetPath}`;
+    return;
+  }
+
+  try {
+    status.textContent = `Loading ${targetPath}…`;
+    const html = await prepareHtml(
+      await target.text(),
+      targetPath,
+      message.session || {},
+      0
     );
+    previewFrame.srcdoc = html;
+    status.textContent = `Previewing ${targetPath}.`;
+  } catch (error) {
+    status.textContent = `Could not load ${targetPath}: ${error.message}`;
+  }
+});
 
+async function prepareHtml(html, pagePath, session = {}, depth = 0) {
+  const parsed = new DOMParser().parseFromString(html, "text/html");
+  const pageDirectory = directoryOf(pagePath);
+  const folderRoot = rootOf(pagePath);
+
+  // Convert imported CSS to data URLs after resolving its local assets.
+  for (const file of selectedFiles.filter((item) => /\.css$/i.test(item.name))) {
+    const path = normalizePath(file.webkitRelativePath);
+    const css = rewriteCss(
+      await file.text(),
+      directoryOf(path),
+      folderRoot
+    );
     dataUrlByPath.set(
       path,
-      `data:text/css;charset=utf-8,${encodeURIComponent(rewrittenCss)}`
+      `data:text/css;charset=utf-8,${encodeURIComponent(css)}`
     );
   }
 
-  // Remove <base>, which could override the local URL resolution.
   parsed.querySelectorAll("base").forEach((base) => base.remove());
 
+  // Inline imported scripts so redirects can be routed to local HTML files.
+  for (const script of Array.from(parsed.querySelectorAll("script[src]"))) {
+    const src = script.getAttribute("src");
+    const path = resolvePath(src, pageDirectory, folderRoot);
+    const file = findFile(path);
+
+    if (!file) {
+      // Preserve external scripts; leave missing local scripts alone so they
+      // don't accidentally load a same-named viewer URL.
+      if (isExternalUrl(src)) continue;
+      script.remove();
+      continue;
+    }
+
+    const replacement = parsed.createElement("script");
+    for (const attribute of Array.from(script.attributes)) {
+      if (attribute.name !== "src" && attribute.name !== "async" && attribute.name !== "defer") {
+        replacement.setAttribute(attribute.name, attribute.value);
+      }
+    }
+    replacement.textContent = rewriteNavigation(await file.text());
+    script.replaceWith(replacement);
+  }
+
+  // Rewrite inline navigation statements such as:
+  // window.location = "game.html"
+  for (const script of parsed.querySelectorAll("script:not([src])")) {
+    if (script.textContent) {
+      script.textContent = rewriteNavigation(script.textContent);
+    }
+  }
+
+  // Rewrite static local assets and links.
   for (const element of parsed.querySelectorAll(
     "[src], [href], [poster], [srcset], [style]"
   )) {
+    if (element.matches("iframe[src]") && depth < 5) {
+      const src = element.getAttribute("src");
+      if (!isExternalUrl(src)) {
+        const childPath = resolvePath(src, pageDirectory, folderRoot);
+        const childFile = findFile(childPath);
+        if (childFile && /\.html?$/i.test(childFile.name)) {
+          const childHtml = await prepareHtml(
+            await childFile.text(),
+            normalizePath(childFile.webkitRelativePath),
+            session,
+            depth + 1
+          );
+          element.removeAttribute("src");
+          element.setAttribute("srcdoc", childHtml);
+          continue;
+        }
+      }
+    }
+
     for (const attribute of ["src", "href", "poster"]) {
-      if (element.hasAttribute(attribute)) {
+      if (!element.hasAttribute(attribute)) continue;
+
+      const value = element.getAttribute(attribute);
+      if (element.matches("a[href]") && !isExternalUrl(value)) {
+        element.dataset.localTarget = resolvePath(value, pageDirectory, folderRoot);
+        element.setAttribute("href", "#");
+      } else {
         element.setAttribute(
           attribute,
-          resolveLocalUrl(
-            element.getAttribute(attribute),
-            entryDirectory,
-            folderRoot,
-            dataUrlByPath
-          )
+          resolveAssetUrl(value, pageDirectory, folderRoot)
         );
       }
     }
@@ -121,24 +201,14 @@ async function prepareHtml(html, entryPath, dataUrlByPath) {
     if (element.hasAttribute("srcset")) {
       element.setAttribute(
         "srcset",
-        rewriteSrcset(
-          element.getAttribute("srcset"),
-          entryDirectory,
-          folderRoot,
-          dataUrlByPath
-        )
+        rewriteSrcset(element.getAttribute("srcset"), pageDirectory, folderRoot)
       );
     }
 
     if (element.hasAttribute("style")) {
       element.setAttribute(
         "style",
-        rewriteCss(
-          element.getAttribute("style"),
-          entryDirectory,
-          folderRoot,
-          dataUrlByPath
-        )
+        rewriteCss(element.getAttribute("style"), pageDirectory, folderRoot)
       );
     }
   }
@@ -146,137 +216,187 @@ async function prepareHtml(html, entryPath, dataUrlByPath) {
   for (const style of parsed.querySelectorAll("style")) {
     style.textContent = rewriteCss(
       style.textContent,
-      entryDirectory,
-      folderRoot,
-      dataUrlByPath
+      pageDirectory,
+      folderRoot
     );
   }
 
-  // Install the request shim before the imported page's scripts run.
-  const shim = parsed.createElement("script");
-  const fileMap = Object.fromEntries(dataUrlByPath);
-  const safeMapJson = JSON.stringify(fileMap).replace(/</g, "\\u003c");
+  const runtime = parsed.createElement("script");
+  runtime.textContent =
+    `(${installPreviewRuntime.toString()})` +
+    `(${safeJson(Object.fromEntries(dataUrlByPath))},` +
+    `${JSON.stringify(normalizePath(pagePath))},` +
+    `${safeJson(session)});`;
 
-  shim.textContent =
-    `(${installLocalXMLHttpRequest.toString()})` +
-    `(${safeMapJson}, ${JSON.stringify(normalizePath(entryPath))});`;
-
-  parsed.head.prepend(shim);
-
+  parsed.head.prepend(runtime);
   return `<!doctype html>\n${parsed.documentElement.outerHTML}`;
 }
 
-function installLocalXMLHttpRequest(dataUrlByPath, entryPath) {
-  const NativeXMLHttpRequest = window.XMLHttpRequest;
-  const virtualOrigin = "https://local-preview.invalid/";
-  const currentPath = entryPath;
+function installPreviewRuntime(files, pagePath, initialSession) {
+  const nativeXHR = window.XMLHttpRequest;
+  const sessionValues = { ...initialSession };
 
+  // srcdoc documents have no useful directory URL. Use the imported page path
+  // as the base for requests made by the preview.
   function normalize(path) {
     const parts = [];
-
-    for (const part of path.replaceAll("\\", "/").split("/")) {
+    for (const part of String(path).replaceAll("\\", "/").split("/")) {
       if (!part || part === ".") continue;
       if (part === "..") parts.pop();
       else parts.push(part);
     }
-
     return parts.join("/");
   }
 
-  function folderRoot() {
-    const slash = currentPath.indexOf("/");
-    return slash < 0 ? "" : currentPath.slice(0, slash + 1);
+  function root() {
+    const slash = pagePath.indexOf("/");
+    return slash < 0 ? "" : pagePath.slice(0, slash + 1);
   }
 
-  function lookupLocalDataUrl(requestUrl) {
-    let url;
+  function localPath(value) {
+    if (!value || /^(?:[a-z][a-z\d+.-]*:|\/\/|#)/i.test(value)) return null;
 
     try {
-      url = new URL(requestUrl, `${virtualOrigin}${currentPath}`);
+      const base = `https://preview.invalid/${pagePath}`;
+      const url = new URL(value, base);
+      if (url.origin !== "https://preview.invalid") return null;
+
+      const path = normalize(decodeURIComponent(url.pathname).replace(/^\/+/, ""));
+      return {
+        path: files[path] ? path : normalize(`${root()}${path}`),
+        query: url.search,
+        hash: url.hash
+      };
     } catch {
       return null;
     }
-
-    // Only intercept relative or site-root paths for the virtual preview site.
-    if (url.origin !== new URL(virtualOrigin).origin) return null;
-
-    let path;
-    try {
-      path = normalize(decodeURIComponent(url.pathname).replace(/^\/+/, ""));
-    } catch {
-      return null;
-    }
-
-    const root = folderRoot();
-    const dataUrl =
-      dataUrlByPath[path] ||
-      dataUrlByPath[normalize(`${root}${path}`)];
-
-    return dataUrl ? { dataUrl, path, search: url.search, hash: url.hash } : null;
   }
 
-  function decodeDataUrl(dataUrl) {
+  function lookup(value) {
+    const result = localPath(value);
+    if (!result || !files[result.path]) return null;
+    return { ...result, dataUrl: files[result.path] };
+  }
+
+  function dataUrlText(dataUrl) {
     const comma = dataUrl.indexOf(",");
-    if (comma < 0) throw new Error("Invalid local data URL.");
-
-    const metadata = dataUrl.slice(0, comma);
+    if (comma < 0) return "";
+    const meta = dataUrl.slice(0, comma);
     const payload = dataUrl.slice(comma + 1);
-    const isBase64 = /;base64/i.test(metadata);
-    const mimeType =
-      metadata.match(/^data:([^;,]*)/i)?.[1] || "text/plain";
 
-    let bytes;
-
-    if (isBase64) {
+    if (/;base64/i.test(meta)) {
       const binary = atob(payload);
-      bytes = new Uint8Array(binary.length);
-      for (let index = 0; index < binary.length; index += 1) {
-        bytes[index] = binary.charCodeAt(index);
-      }
-    } else {
-      bytes = new TextEncoder().encode(decodeURIComponent(payload));
+      const bytes = Uint8Array.from(binary, (char) => char.charCodeAt(0));
+      return new TextDecoder().decode(bytes);
     }
 
-    return { bytes, mimeType };
+    return decodeURIComponent(payload);
+  }
+
+  // Virtual sessionStorage survives preview navigation through the host.
+  window.sessionStorage = {
+    get length() {
+      return Object.keys(sessionValues).length;
+    },
+    key(index) {
+      return Object.keys(sessionValues)[index] ?? null;
+    },
+    getItem(key) {
+      return Object.hasOwn(sessionValues, key) ? sessionValues[key] : null;
+    },
+    setItem(key, value) {
+      sessionValues[String(key)] = String(value);
+    },
+    removeItem(key) {
+      delete sessionValues[String(key)];
+    },
+    clear() {
+      for (const key of Object.keys(sessionValues)) delete sessionValues[key];
+    }
+  };
+
+  function navigate(path) {
+    const target = localPath(path);
+    if (!target || !files[target.path] || !/\.html?$/i.test(target.path)) {
+      return;
+    }
+
+    parent.postMessage({
+      type: "local-preview:navigate",
+      path: target.path,
+      session: sessionValues
+    }, "*");
+  }
+
+  window.__localNavigate = navigate;
+
+  // Route ordinary local links through the preview host.
+  document.addEventListener("click", (event) => {
+    const link = event.target.closest("a[data-local-target]");
+    if (!link) return;
+    event.preventDefault();
+    navigate(link.dataset.localTarget);
+  }, true);
+
+  // Rewrite dynamically assigned local asset URLs (the simulator creates many
+  // images and scripts after its HTML has loaded).
+  function rewriteDynamicUrl(value) {
+    const found = lookup(String(value));
+    return found ? found.dataUrl : value;
+  }
+
+  for (const Constructor of [
+    window.HTMLImageElement,
+    window.HTMLScriptElement,
+    window.HTMLAudioElement,
+    window.HTMLSourceElement,
+    window.HTMLIFrameElement
+  ]) {
+    if (!Constructor) continue;
+    const descriptor = Object.getOwnPropertyDescriptor(Constructor.prototype, "src");
+    if (!descriptor || !descriptor.set || !descriptor.get) continue;
+
+    Object.defineProperty(Constructor.prototype, "src", {
+      configurable: true,
+      enumerable: descriptor.enumerable,
+      get: descriptor.get,
+      set(value) {
+        if (this instanceof HTMLIFrameElement) {
+          const target = localPath(String(value));
+          if (target && files[target.path] && /\.html?$/i.test(target.path)) {
+            navigate(target.path);
+            return;
+          }
+        }
+        descriptor.set.call(this, rewriteDynamicUrl(value));
+      }
+    });
   }
 
   function LocalXMLHttpRequest() {
-    this._native = new NativeXMLHttpRequest();
-    this._listeners = new Map();
-    this._local = false;
-    this._async = true;
-    this._method = "GET";
-    this._url = "";
-    this._responseType = "";
-    this._response = null;
-    this._responseText = "";
-    this._responseXML = null;
-    this._status = 0;
-    this._statusText = "";
-    this._readyState = 0;
-    this._responseURL = "";
-
+    this.native = new nativeXHR();
+    this.listeners = new Map();
+    this.localRequest = null;
+    this.readyState = 0;
+    this.status = 0;
+    this.statusText = "";
+    this.responseText = "";
+    this.response = null;
+    this.responseXML = null;
+    this.responseType = "";
     this.onreadystatechange = null;
     this.onload = null;
     this.onerror = null;
-    this.onabort = null;
     this.onloadend = null;
+    this.onabort = null;
     this.onloadstart = null;
-    this.onprogress = null;
 
-    const eventTypes = [
-      "readystatechange",
-      "load",
-      "error",
-      "abort",
-      "loadend",
-      "loadstart",
-      "progress"
-    ];
-
-    for (const type of eventTypes) {
-      this._native.addEventListener(type, (event) => {
-        this._dispatch(type, event);
+    for (const type of ["readystatechange", "load", "error", "loadend", "abort", "loadstart"]) {
+      this.native.addEventListener(type, (event) => {
+        if (typeof this[`on${type}`] === "function") this[`on${type}`].call(this, event);
+        for (const listener of this.listeners.get(type) || []) {
+          typeof listener === "function" ? listener.call(this, event) : listener.handleEvent(event);
+        }
       });
     }
   }
@@ -288,358 +408,170 @@ function installLocalXMLHttpRequest(dataUrlByPath, entryPath) {
   LocalXMLHttpRequest.DONE = 4;
 
   LocalXMLHttpRequest.prototype.addEventListener = function (type, listener) {
-    if (!listener) return;
-    if (!this._listeners.has(type)) this._listeners.set(type, new Set());
-    this._listeners.get(type).add(listener);
+    if (!this.listeners.has(type)) this.listeners.set(type, new Set());
+    this.listeners.get(type).add(listener);
   };
 
   LocalXMLHttpRequest.prototype.removeEventListener = function (type, listener) {
-    this._listeners.get(type)?.delete(listener);
+    this.listeners.get(type)?.delete(listener);
   };
 
-  LocalXMLHttpRequest.prototype.dispatchEvent = function (event) {
-    this._dispatch(event.type, event);
-    return true;
-  };
+  LocalXMLHttpRequest.prototype.open = function (method, url, async = true, ...rest) {
+    this.method = String(method).toUpperCase();
+    this.localRequest = lookup(String(url));
 
-  LocalXMLHttpRequest.prototype._dispatch = function (type, event = {}) {
-    const normalizedEvent = event.type
-      ? event
-      : new Event(type);
-
-    const handler = this[`on${type}`];
-    if (typeof handler === "function") handler.call(this, normalizedEvent);
-
-    for (const listener of this._listeners.get(type) || []) {
-      if (typeof listener === "function") {
-        listener.call(this, normalizedEvent);
-      } else {
-        listener.handleEvent(normalizedEvent);
-      }
+    if (!this.localRequest) {
+      this.native.open(method, url, async, ...rest);
+      this._nativeMode = true;
+    } else {
+      this._nativeMode = false;
+      this.async = async !== false;
+      this.readyState = LocalXMLHttpRequest.OPENED;
+      this.onreadystatechange?.call(this, new Event("readystatechange"));
     }
-  };
-
-  LocalXMLHttpRequest.prototype.open = function (
-    method,
-    url,
-    async = true,
-    username,
-    password
-  ) {
-    this._method = String(method).toUpperCase();
-    this._url = String(url);
-    this._async = async !== false;
-
-    const local = lookupLocalDataUrl(this._url);
-    this._local = Boolean(local);
-    this._localRequest = local;
-
-    if (!this._local) {
-      this._native.open(method, url, async, username, password);
-    }
-
-    this._readyState = LocalXMLHttpRequest.OPENED;
-    this._dispatch("readystatechange");
   };
 
   LocalXMLHttpRequest.prototype.send = function (body = null) {
-    if (!this._local) {
-      this._native.send(body);
+    if (this._nativeMode) {
+      this.native.send(body);
       return;
     }
 
-    if (this._async === false) {
-      throw new DOMException(
-        "Synchronous local preview requests are not supported.",
-        "InvalidAccessError"
-      );
+    if (this.async === false) {
+      throw new DOMException("Synchronous local XHR is not supported.", "InvalidAccessError");
     }
 
-    if (this._method !== "GET" && this._method !== "HEAD") {
-      this._status = 405;
-      this._statusText = "Method Not Allowed";
-      this._readyState = LocalXMLHttpRequest.DONE;
-      this._dispatch("readystatechange");
-      this._dispatch("error");
-      this._dispatch("loadend");
-      return;
-    }
+    this.onloadstart?.call(this, new Event("loadstart"));
 
-    this._dispatch("loadstart");
+    setTimeout(() => {
+      if (this.method !== "GET" && this.method !== "HEAD") {
+        this.status = 405;
+        this.statusText = "Method Not Allowed";
+        this.readyState = LocalXMLHttpRequest.DONE;
+        this.onreadystatechange?.call(this, new Event("readystatechange"));
+        this.onerror?.call(this, new Event("error"));
+        this.onloadend?.call(this, new Event("loadend"));
+        return;
+      }
 
-    try {
-      const { bytes, mimeType } = decodeDataUrl(
-        this._localRequest.dataUrl
-      );
+      this.status = 200;
+      this.statusText = "OK";
+      this.readyState = LocalXMLHttpRequest.HEADERS_RECEIVED;
+      this.onreadystatechange?.call(this, new Event("readystatechange"));
 
-      this._status = 200;
-      this._statusText = "OK";
-      this._responseURL =
-        `${virtualOrigin}${this._localRequest.path}` +
-        this._localRequest.search +
-        this._localRequest.hash;
+      this.readyState = LocalXMLHttpRequest.LOADING;
+      this.onreadystatechange?.call(this, new Event("readystatechange"));
 
-      this._readyState = LocalXMLHttpRequest.HEADERS_RECEIVED;
-      this._dispatch("readystatechange");
+      this.responseText = this.method === "HEAD"
+        ? ""
+        : dataUrlText(this.localRequest.dataUrl);
 
-      this._readyState = LocalXMLHttpRequest.LOADING;
-      this._dispatch("readystatechange");
-
-      if (this._method === "HEAD") {
-        this._responseText = "";
-      } else if (
-        this._responseType === "arraybuffer" ||
-        this._responseType === "blob"
-      ) {
-        const buffer = bytes.buffer.slice(
-          bytes.byteOffset,
-          bytes.byteOffset + bytes.byteLength
-        );
-        this._response =
-          this._responseType === "blob"
-            ? new Blob([buffer], { type: mimeType })
-            : buffer;
+      if (this.responseType === "json") {
+        try {
+          this.response = JSON.parse(this.responseText);
+        } catch {
+          this.response = null;
+        }
+      } else if (this.responseType === "document") {
+        this.responseXML = new DOMParser().parseFromString(this.responseText, "application/xml");
+        this.response = this.responseXML;
       } else {
-        this._responseText = new TextDecoder().decode(bytes);
-
-        if (this._responseType === "json") {
-          try {
-            this._response = JSON.parse(this._responseText);
-          } catch {
-            this._response = null;
-          }
-        } else if (this._responseType === "document") {
-          this._responseXML = new DOMParser().parseFromString(
-            this._responseText,
-            /xml/i.test(mimeType) ? "application/xml" : "text/html"
-          );
-          this._response = this._responseXML;
-        } else {
-          this._response = this._responseText;
-
-          if (/xml/i.test(mimeType)) {
-            this._responseXML = new DOMParser().parseFromString(
-              this._responseText,
-              "application/xml"
-            );
-          }
+        this.response = this.responseText;
+        if (/\.xml$/i.test(this.localRequest.path)) {
+          this.responseXML = new DOMParser().parseFromString(this.responseText, "application/xml");
         }
       }
 
-      this._readyState = LocalXMLHttpRequest.DONE;
-      this._dispatch("readystatechange");
-      this._dispatch("load");
-      this._dispatch("loadend");
-    } catch (error) {
-      this._status = 0;
-      this._statusText = "";
-      this._readyState = LocalXMLHttpRequest.DONE;
-      this._dispatch("readystatechange");
-      this._dispatch("error", new ErrorEvent("error", { error }));
-      this._dispatch("loadend");
-    }
+      this.readyState = LocalXMLHttpRequest.DONE;
+      this.onreadystatechange?.call(this, new Event("readystatechange"));
+      this.onload?.call(this, new Event("load"));
+      this.onloadend?.call(this, new Event("loadend"));
+    }, 0);
   };
 
   LocalXMLHttpRequest.prototype.abort = function () {
-    if (!this._local) {
-      this._native.abort();
-      return;
-    }
-
-    this._status = 0;
-    this._readyState = LocalXMLHttpRequest.DONE;
-    this._dispatch("readystatechange");
-    this._dispatch("abort");
-    this._dispatch("loadend");
+    if (this._nativeMode) return this.native.abort();
+    this.status = 0;
+    this.readyState = LocalXMLHttpRequest.DONE;
+    this.onabort?.call(this, new Event("abort"));
   };
 
-  LocalXMLHttpRequest.prototype.setRequestHeader = function (name, value) {
-    if (!this._local) this._native.setRequestHeader(name, value);
+  LocalXMLHttpRequest.prototype.setRequestHeader = function (...args) {
+    if (this._nativeMode) this.native.setRequestHeader(...args);
   };
 
   LocalXMLHttpRequest.prototype.getResponseHeader = function (name) {
-    if (!this._local) return this._native.getResponseHeader(name);
+    if (this._nativeMode) return this.native.getResponseHeader(name);
     if (String(name).toLowerCase() === "content-type") {
-      return decodeDataUrl(this._localRequest.dataUrl).mimeType;
+      return this.localRequest.dataUrl.match(/^data:([^;,]*)/)?.[1] || "text/plain";
     }
     return null;
   };
 
   LocalXMLHttpRequest.prototype.getAllResponseHeaders = function () {
-    if (!this._local) return this._native.getAllResponseHeaders();
-    return `content-type: ${decodeDataUrl(this._localRequest.dataUrl).mimeType}\r\n`;
+    if (this._nativeMode) return this.native.getAllResponseHeaders();
+    return `content-type: ${this.getResponseHeader("content-type")}\r\n`;
   };
-
-  Object.defineProperties(LocalXMLHttpRequest.prototype, {
-    readyState: {
-      get() {
-        return this._local ? this._readyState : this._native.readyState;
-      }
-    },
-    status: {
-      get() {
-        return this._local ? this._status : this._native.status;
-      }
-    },
-    statusText: {
-      get() {
-        return this._local ? this._statusText : this._native.statusText;
-      }
-    },
-    responseURL: {
-      get() {
-        return this._local ? this._responseURL : this._native.responseURL;
-      }
-    },
-    responseText: {
-      get() {
-        if (!this._local) return this._native.responseText;
-        if (this._responseType && this._responseType !== "text") {
-          throw new DOMException(
-            "responseText is unavailable for this responseType.",
-            "InvalidStateError"
-          );
-        }
-        return this._responseText;
-      }
-    },
-    responseXML: {
-      get() {
-        return this._local ? this._responseXML : this._native.responseXML;
-      }
-    },
-    response: {
-      get() {
-        return this._local ? this._response : this._native.response;
-      }
-    },
-    responseType: {
-      get() {
-        return this._local ? this._responseType : this._native.responseType;
-      },
-      set(value) {
-        this._responseType = value;
-        if (!this._local) this._native.responseType = value;
-      }
-    },
-    timeout: {
-      get() {
-        return this._native.timeout;
-      },
-      set(value) {
-        this._native.timeout = value;
-      }
-    },
-    withCredentials: {
-      get() {
-        return this._native.withCredentials;
-      },
-      set(value) {
-        this._native.withCredentials = value;
-      }
-    },
-    upload: {
-      get() {
-        return this._native.upload;
-      }
-    }
-  });
 
   window.XMLHttpRequest = LocalXMLHttpRequest;
 }
 
-function fileToDataUrl(file) {
-  return new Promise((resolve, reject) => {
-    const reader = new FileReader();
-    reader.onload = () => resolve(reader.result);
-    reader.onerror = () =>
-      reject(reader.error || new Error(`Could not read ${file.name}`));
-    reader.readAsDataURL(file);
+function rewriteNavigation(source) {
+  return source
+    .replace(
+      /\b(?:window\.)?location(?:\.href)?\s*=\s*(["'`])([^"'`]+)\1/g,
+      (_match, _quote, path) => `window.__localNavigate(${JSON.stringify(path)})`
+    )
+    .replace(
+      /\b(?:window\.)?location\.(?:assign|replace)\(\s*(["'`])([^"'`]+)\1\s*\)/g,
+      (_match, _quote, path) => `window.__localNavigate(${JSON.stringify(path)})`
+    );
+}
+
+function rewriteCss(css, baseDirectory, folderRoot) {
+  return css.replace(/url\(\s*(['"]?)(.*?)\1\s*\)/gi, (match, quote, value) => {
+    const rewritten = resolveAssetUrl(value, baseDirectory, folderRoot);
+    return `url(${quote}${rewritten}${quote})`;
   });
 }
 
-function rewriteCss(css, baseDirectory, folderRoot, dataUrlByPath) {
-  return css
-    .replace(/url\(\s*(['"]?)(.*?)\1\s*\)/gi, (match, quote, value) => {
-      const resolved = resolveLocalUrl(
-        value,
-        baseDirectory,
-        folderRoot,
-        dataUrlByPath
-      );
-      return `url(${quote}${resolved}${quote})`;
-    })
-    .replace(/@import\s+(['"])(.*?)\1/gi, (match, quote, value) => {
-      return `@import ${quote}${resolveLocalUrl(
-        value,
-        baseDirectory,
-        folderRoot,
-        dataUrlByPath
-      )}${quote}`;
-    });
+function rewriteSrcset(value, baseDirectory, folderRoot) {
+  return value.split(",").map((candidate) => {
+    const parts = candidate.trim().split(/\s+/);
+    if (parts[0]) parts[0] = resolveAssetUrl(parts[0], baseDirectory, folderRoot);
+    return parts.join(" ");
+  }).join(", ");
 }
 
-function rewriteSrcset(srcset, baseDirectory, folderRoot, dataUrlByPath) {
-  return srcset
-    .split(",")
-    .map((candidate) => {
-      const parts = candidate.trim().split(/\s+/);
-      if (parts[0]) {
-        parts[0] = resolveLocalUrl(
-          parts[0],
-          baseDirectory,
-          folderRoot,
-          dataUrlByPath
-        );
-      }
-      return parts.join(" ");
-    })
-    .join(", ");
+function resolveAssetUrl(value, baseDirectory, folderRoot) {
+  const path = resolvePath(value, baseDirectory, folderRoot);
+  return dataUrlByPath.get(path) || value;
 }
 
-function resolveLocalUrl(value, baseDirectory, folderRoot, dataUrlByPath) {
-  const trimmed = value.trim();
+function resolvePath(value, baseDirectory, folderRoot) {
+  const trimmed = String(value).trim();
+  if (!trimmed || isExternalUrl(trimmed) || trimmed.startsWith("#")) return "";
 
-  if (
-    !trimmed ||
-    /^(?:[a-z][a-z\d+.-]*:|\/\/|#)/i.test(trimmed)
-  ) {
-    if (!trimmed.startsWith("/")) return value;
-  }
-
-  let url;
   try {
-    url = new URL(trimmed, `https://local-preview.invalid/${baseDirectory}`);
+    const url = new URL(trimmed, `https://preview.invalid/${baseDirectory}`);
+    if (url.origin !== "https://preview.invalid") return "";
+    const path = normalizePath(decodeURIComponent(url.pathname).replace(/^\/+/, ""));
+    if (dataUrlByPath.has(path)) return path;
+    const rooted = normalizePath(`${folderRoot}${path}`);
+    return dataUrlByPath.has(rooted) ? rooted : path;
   } catch {
-    return value;
+    return "";
   }
-
-  if (url.origin !== "https://local-preview.invalid") return value;
-
-  let path;
-  try {
-    path = normalizePath(decodeURIComponent(url.pathname).replace(/^\/+/, ""));
-  } catch {
-    return value;
-  }
-
-  const dataUrl =
-    dataUrlByPath.get(path) ||
-    dataUrlByPath.get(normalizePath(`${folderRoot}${path}`));
-
-  return dataUrl ? `${dataUrl}${url.hash}` : value;
 }
 
-function normalizePath(path) {
-  const parts = [];
+function isExternalUrl(value) {
+  return /^(?:[a-z][a-z\d+.-]*:|\/\/)/i.test(String(value).trim());
+}
 
-  for (const part of path.replaceAll("\\", "/").split("/")) {
-    if (!part || part === ".") continue;
-    if (part === "..") parts.pop();
-    else parts.push(part);
-  }
-
-  return parts.join("/");
+function findFile(path) {
+  return selectedFiles.find(
+    (file) => normalizePath(file.webkitRelativePath) === normalizePath(path)
+  );
 }
 
 function directoryOf(path) {
@@ -652,4 +584,27 @@ function rootOf(path) {
   const normalized = normalizePath(path);
   const slash = normalized.indexOf("/");
   return slash < 0 ? "" : normalized.slice(0, slash + 1);
+}
+
+function normalizePath(path) {
+  const parts = [];
+  for (const part of String(path).replaceAll("\\", "/").split("/")) {
+    if (!part || part === ".") continue;
+    if (part === "..") parts.pop();
+    else parts.push(part);
+  }
+  return parts.join("/");
+}
+
+function safeJson(value) {
+  return JSON.stringify(value).replace(/</g, "\\u003c");
+}
+
+function fileToDataUrl(file) {
+  return new Promise((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onload = () => resolve(reader.result);
+    reader.onerror = () => reject(reader.error || new Error(`Could not read ${file.name}`));
+    reader.readAsDataURL(file);
+  });
 }
