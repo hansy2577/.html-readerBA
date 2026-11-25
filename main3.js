@@ -4,7 +4,7 @@ const folderInput = document.querySelector("#folder-input");
 const status = document.querySelector("#status");
 const output = document.querySelector("#output");
 
-alert("hello555");
+alert("hello");
 
 let selectedFiles = [];
 let dataUrlByPath = new Map();
@@ -421,6 +421,8 @@ this.responseText =
     ? ""
     : dataUrlText(this.localRequest.dataUrl);
 
+// The simulator expects its third readystatechange callback to be DONE:
+// 1. open() sets OPENED, 2. LOADING here, 3. DONE below.
 this.readyState = LocalXMLHttpRequest.LOADING;
 this.onreadystatechange?.call(this, new Event("readystatechange"));
 
@@ -438,6 +440,7 @@ if (this.responseType === "json") {
   this.response = this.responseXML;
 } else {
   this.response = this.responseText;
+
   if (/\.xml$/i.test(this.localRequest.path)) {
     this.responseXML = new DOMParser().parseFromString(
       this.responseText,
@@ -450,7 +453,6 @@ this.readyState = LocalXMLHttpRequest.DONE;
 this.onreadystatechange?.call(this, new Event("readystatechange"));
 this.onload?.call(this, new Event("load"));
 this.onloadend?.call(this, new Event("loadend"));
-
     for (const type of ["readystatechange", "load", "error", "loadend", "abort", "loadstart"]) {
       this.native.addEventListener(type, (event) => {
         if (typeof this[`on${type}`] === "function") this[`on${type}`].call(this, event);
