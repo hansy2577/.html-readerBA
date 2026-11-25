@@ -6,8 +6,6 @@ const output = document.querySelector("#output");
 
 alert("hello55")
 
-
-
 let selectedFiles = [];
 let dataUrlByPath = new Map();
 let previewFrame = null;
