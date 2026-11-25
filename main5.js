@@ -540,104 +540,94 @@ function installPreviewRuntime(files, pagePath, initialSession) {
       );
     };
 
-  LocalXMLHttpRequest.prototype.send =
-    function (body = null) {
-      if (this._nativeMode) {
-        this.native.send(body);
-        return;
-      }
+  LocalXMLHttpRequest.prototype.send = function (body = null) {
+  if (this._nativeMode) {
+    this.native.send(body);
+    return;
+  }
 
-      if (this.async === false) {
-        throw new DOMException(
-          "Synchronous local XHR is not supported.",
-          "InvalidAccessError"
-        );
-      }
+  if (this.async === false) {
+    throw new DOMException(
+      "Synchronous local XHR is not supported.",
+      "InvalidAccessError"
+    );
+  }
 
-      this.onloadstart?.call(
-        this,
-        new Event("loadstart")
+  const emit = (type) => {
+    const event = new Event(type);
+
+    if (typeof this[`on${type}`] === "function") {
+      this[`on${type}`].call(this, event);
+    }
+
+    for (const listener of this.listeners.get(type) || []) {
+      if (typeof listener === "function") {
+        listener.call(this, event);
+      } else {
+        listener.handleEvent(event);
+      }
+    }
+  };
+
+  emit("loadstart");
+
+  setTimeout(() => {
+    if (this.method !== "GET" && this.method !== "HEAD") {
+      this.status = 405;
+      this.statusText = "Method Not Allowed";
+      this.readyState = LocalXMLHttpRequest.DONE;
+      emit("readystatechange");
+      emit("error");
+      emit("loadend");
+      return;
+    }
+
+    this.status = 200;
+    this.statusText = "OK";
+    this.responseText =
+      this.method === "HEAD"
+        ? ""
+        : dataUrlText(this.localRequest.dataUrl);
+
+    // The simulator registers onreadystatechange after open(), so it counts
+    // these three send() callbacks: HEADERS_RECEIVED, LOADING, then DONE.
+    this.readyState = LocalXMLHttpRequest.HEADERS_RECEIVED;
+    emit("readystatechange");
+
+    this.readyState = LocalXMLHttpRequest.LOADING;
+    emit("readystatechange");
+
+    if (this.responseType === "json") {
+      try {
+        this.response = JSON.parse(this.responseText);
+      } catch {
+        this.response = null;
+      }
+    } else if (this.responseType === "document") {
+      this.responseXML = new DOMParser().parseFromString(
+        this.responseText,
+        "application/xml"
       );
+      this.response = this.responseXML;
+    } else {
+      this.response = this.responseText;
 
-      setTimeout(() => {
-        if (
-          this.method !== "GET" &&
-          this.method !== "HEAD"
-        ) {
-          this.status = 405;
-          this.statusText = "Method Not Allowed";
-          this.readyState = LocalXMLHttpRequest.DONE;
-
-          this.onreadystatechange?.call(
-            this,
-            new Event("readystatechange")
-          );
-          this.onerror?.call(
-            this,
-            new Event("error")
-          );
-          this.onloadend?.call(
-            this,
-            new Event("loadend")
-          );
-          return;
-        }
-
-        this.status = 200;
-        this.statusText = "OK";
-        this.responseText =
-          this.method === "HEAD"
-            ? ""
-            : dataUrlText(this.localRequest.dataUrl);
-
-        this.readyState = LocalXMLHttpRequest.LOADING;
-        this.onreadystatechange?.call(
-          this,
-          new Event("readystatechange")
+      if (/\.xml$/i.test(this.localRequest.path)) {
+        this.responseXML = new DOMParser().parseFromString(
+          this.responseText,
+          "application/xml"
         );
+      }
+    }
 
-        if (this.responseType === "json") {
-          try {
-            this.response = JSON.parse(this.responseText);
-          } catch {
-            this.response = null;
-          }
-        } else if (this.responseType === "document") {
-          this.responseXML =
-            new DOMParser().parseFromString(
-              this.responseText,
-              "application/xml"
-            );
-          this.response = this.responseXML;
-        } else {
-          this.response = this.responseText;
-
-          if (/\.xml$/i.test(this.localRequest.path)) {
-            this.responseXML =
-              new DOMParser().parseFromString(
-                this.responseText,
-                "application/xml"
-              );
-          }
-        }
-
-        this.readyState = LocalXMLHttpRequest.DONE;
-        this.onreadystatechange?.call(
-          this,
-          new Event("readystatechange")
-        );
-        this.onload?.call(
-          this,
-          new Event("load")
-        );
-        this.onloadend?.call(
-          this,
-          new Event("loadend")
-        );
-      }, 0);
-    };
-
-  LocalXMLHttpRequest.prototype.abort =
+    this.readyState = LocalXMLHttpRequest.DONE;
+    emit("readystatechange");
+    emit("load");
+    emit("loadend");
+  }, 0);
+};
+  
+   LocalXMLHttpRequest.prototype.abort =
     function () {
       if (this._nativeMode) {
         this.native.abort();
