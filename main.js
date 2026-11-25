@@ -4,6 +4,8 @@ const folderInput = document.querySelector("#folder-input");
 const status = document.querySelector("#status");
 const output = document.querySelector("#output");
 
+alert("hello1")
+
 let selectedFiles = [];
 let activeUrls = [];
 
