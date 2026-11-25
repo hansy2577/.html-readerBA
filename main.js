@@ -4,7 +4,7 @@ const folderInput = document.querySelector("#folder-input");
 const status = document.querySelector("#status");
 const output = document.querySelector("#output");
 
-alert("hello55");
+alert("hello555");
 
 let selectedFiles = [];
 let dataUrlByPath = new Map();
@@ -617,15 +617,18 @@ function normalizePath(path) {
   return parts.join("/");
 }
 
+
 function safeJson(value) {
   return JSON.stringify(value).replace(/</g, "\\u003c");
 }
 
+
 window.addEventListener("keydown", (event) => {
-  if (event.key === "Escape") {
+  if (event.key === "Escap") {
     document.body.classList.remove("preview-mode");
   }
 });
+
 
 function fileToDataUrl(file) {
   return new Promise((resolve, reject) => {
