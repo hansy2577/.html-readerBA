@@ -1,0 +1,22 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Local File Viewer</title>
+  <link rel="stylesheet" href="styles.css">
+  <script src="app.js" defer></script>
+</head>
+<body>
+  <main>
+    <h1>Local File Viewer</h1>
+    <div class="actions">
+      <button id="import-button" type="button">Import folder</button>
+      <button id="load-button" type="button" disabled>Load</button>
+      <input id="folder-input" type="file" webkitdirectory multiple hidden>
+    </div>
+    <p id="status" role="status" aria-live="polite">Import a folder to get started.</p>
+    <section id="output" aria-label="Loaded files"></section>
+  </main>
+</body>
+</html>
