@@ -8,9 +8,14 @@ let previewFrame = null;
 let currentPreviewPath = "";
 let currentSession = {};
 
-async function readFolder() {
+// main10.js — https://github.com/hansy2577/local-file-viewer/blob/main/main10.js
+const importButton = document.querySelector("#import-button");
+
+function readFolder() {
   folderInput.click();
 }
+
+importButton.addEventListener("click", readFolder);
 
 async function loadSelectedFolder(files) {
   if (!files.length) return;
