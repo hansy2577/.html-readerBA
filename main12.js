@@ -84,6 +84,21 @@ document.addEventListener("keydown", (event) => {
 window.addEventListener("message", async (event) => {
   const message = event.data;
 
+if (
+  event.source === previewFrame?.contentWindow &&
+  message?.type === "local-preview:console"
+) {
+  const logger =
+    console[message.level] || console.log;
+
+  logger.call(
+    console,
+    `[Preview] ${message.text}`
+  );
+
+  return;
+}
+
   if (
     !message ||
     (message.type !== "local-preview:navigate" &&
@@ -309,6 +324,64 @@ function installPreviewRuntime(files, pagePath, initialSession) {
   const nativeXHR = window.XMLHttpRequest;
   const sessionValues = { ...initialSession };
 
+  function describePreviewValue(value) {
+  if (value instanceof Error) {
+    return value.stack || `${value.name}: ${value.message}`;
+  }
+
+  if (typeof value === "string") {
+    return value;
+  }
+
+  try {
+    const json = JSON.stringify(value);
+    return json === undefined ? String(value) : json;
+  } catch {
+    return String(value);
+  }
+}
+
+function sendPreviewConsole(level, values) {
+  parent.postMessage(
+    {
+      type: "local-preview:console",
+      level,
+      text: values.map(describePreviewValue).join(" ")
+    },
+    "*"
+  );
+}
+
+for (const level of ["log", "info", "warn", "error", "debug"]) {
+  const original = console[level]?.bind(console);
+
+  if (!original) continue;
+
+  console[level] = (...values) => {
+    original(...values);
+    sendPreviewConsole(level, values);
+  };
+}
+
+window.addEventListener("error", (event) => {
+  const details = [
+    event.message || "Preview error",
+    event.filename,
+    event.lineno ? `line ${event.lineno}` : "",
+    event.colno ? `column ${event.colno}` : "",
+    event.error?.stack || ""
+  ].filter(Boolean);
+
+  sendPreviewConsole("error", details);
+});
+
+window.addEventListener("unhandledrejection", (event) => {
+  sendPreviewConsole("error", [
+    "Unhandled promise rejection:",
+    event.reason
+  ]);
+});
+  
   function normalize(path) {
     const parts = [];
 
@@ -941,6 +1014,8 @@ function rewriteSrcset(value, baseDirectory, folderRoot) {
     })
     .join(", ");
 }
+
+
 
 function resolveAssetUrl(value, baseDirectory, folderRoot) {
   const path = resolvePath(value, baseDirectory, folderRoot);
