@@ -8,7 +8,6 @@ let previewFrame = null;
 let currentPreviewPath = "";
 let currentSession = {};
 
-// main10.js — https://github.com/hansy2577/local-file-viewer/blob/main/main10.js
 const importButton = document.querySelector("#import-button");
 
 function readFolder() {
@@ -84,20 +83,14 @@ document.addEventListener("keydown", (event) => {
 window.addEventListener("message", async (event) => {
   const message = event.data;
 
-if (
-  event.source === previewFrame?.contentWindow &&
-  message?.type === "local-preview:console"
-) {
-  const logger =
-    console[message.level] || console.log;
-
-  logger.call(
-    console,
-    `[Preview] ${message.text}`
-  );
-
-  return;
-}
+  if (
+    event.source === previewFrame?.contentWindow &&
+    message?.type === "local-preview:console"
+  ) {
+    const logger = console[message.level] || console.log;
+    logger.call(console, `[Preview] ${message.text}`);
+    return;
+  }
 
   if (
     !message ||
@@ -322,66 +315,106 @@ async function prepareHtml(
 
 function installPreviewRuntime(files, pagePath, initialSession) {
   const nativeXHR = window.XMLHttpRequest;
-  const sessionValues = { ...initialSession };
+
+  const storageState = {
+    local: { ...(initialSession?.local || {}) },
+    session: { ...(initialSession?.session || {}) }
+  };
+
+  function makeStorage(values) {
+    return {
+      get length() {
+        return Object.keys(values).length;
+      },
+
+      key(index) {
+        return Object.keys(values)[index] ?? null;
+      },
+
+      getItem(key) {
+        const stringKey = String(key);
+        return Object.hasOwn(values, stringKey)
+          ? values[stringKey]
+          : null;
+      },
+
+      setItem(key, value) {
+        values[String(key)] = String(value);
+      },
+
+      removeItem(key) {
+        delete values[String(key)];
+      },
+
+      clear() {
+        for (const key of Object.keys(values)) {
+          delete values[key];
+        }
+      }
+    };
+  }
+
+  window.__localStorage = makeStorage(storageState.local);
+  window.__localSessionStorage = makeStorage(storageState.session);
 
   function describePreviewValue(value) {
-  if (value instanceof Error) {
-    return value.stack || `${value.name}: ${value.message}`;
+    if (value instanceof Error) {
+      return value.stack || `${value.name}: ${value.message}`;
+    }
+
+    if (typeof value === "string") {
+      return value;
+    }
+
+    try {
+      const json = JSON.stringify(value);
+      return json === undefined ? String(value) : json;
+    } catch {
+      return String(value);
+    }
   }
 
-  if (typeof value === "string") {
-    return value;
+  function sendPreviewConsole(level, values) {
+    parent.postMessage(
+      {
+        type: "local-preview:console",
+        level,
+        text: values.map(describePreviewValue).join(" ")
+      },
+      "*"
+    );
   }
 
-  try {
-    const json = JSON.stringify(value);
-    return json === undefined ? String(value) : json;
-  } catch {
-    return String(value);
+  for (const level of ["log", "info", "warn", "error", "debug"]) {
+    const original = console[level]?.bind(console);
+
+    if (!original) continue;
+
+    console[level] = (...values) => {
+      original(...values);
+      sendPreviewConsole(level, values);
+    };
   }
-}
 
-function sendPreviewConsole(level, values) {
-  parent.postMessage(
-    {
-      type: "local-preview:console",
-      level,
-      text: values.map(describePreviewValue).join(" ")
-    },
-    "*"
-  );
-}
+  window.addEventListener("error", (event) => {
+    const details = [
+      event.message || "Preview error",
+      event.filename,
+      event.lineno ? `line ${event.lineno}` : "",
+      event.colno ? `column ${event.colno}` : "",
+      event.error?.stack || ""
+    ].filter(Boolean);
 
-for (const level of ["log", "info", "warn", "error", "debug"]) {
-  const original = console[level]?.bind(console);
+    sendPreviewConsole("error", details);
+  });
 
-  if (!original) continue;
+  window.addEventListener("unhandledrejection", (event) => {
+    sendPreviewConsole("error", [
+      "Unhandled promise rejection:",
+      event.reason
+    ]);
+  });
 
-  console[level] = (...values) => {
-    original(...values);
-    sendPreviewConsole(level, values);
-  };
-}
-
-window.addEventListener("error", (event) => {
-  const details = [
-    event.message || "Preview error",
-    event.filename,
-    event.lineno ? `line ${event.lineno}` : "",
-    event.colno ? `column ${event.colno}` : "",
-    event.error?.stack || ""
-  ].filter(Boolean);
-
-  sendPreviewConsole("error", details);
-});
-
-window.addEventListener("unhandledrejection", (event) => {
-  sendPreviewConsole("error", [
-    "Unhandled promise rejection:",
-    event.reason
-  ]);
-});
-  
   function normalize(path) {
     const parts = [];
 
@@ -485,37 +518,6 @@ window.addEventListener("unhandledrejection", (event) => {
     return decodeURIComponent(payload);
   }
 
-  window.__localSessionStorage = {
-    get length() {
-      return Object.keys(sessionValues).length;
-    },
-
-    key(index) {
-      return Object.keys(sessionValues)[index] ?? null;
-    },
-
-    getItem(key) {
-      const stringKey = String(key);
-      return Object.hasOwn(sessionValues, stringKey)
-        ? sessionValues[stringKey]
-        : null;
-    },
-
-    setItem(key, value) {
-      sessionValues[String(key)] = String(value);
-    },
-
-    removeItem(key) {
-      delete sessionValues[String(key)];
-    },
-
-    clear() {
-      for (const key of Object.keys(sessionValues)) {
-        delete sessionValues[key];
-      }
-    }
-  };
-
   function navigate(path) {
     const target = localPath(path);
 
@@ -531,7 +533,7 @@ window.addEventListener("unhandledrejection", (event) => {
       {
         type: "local-preview:navigate",
         path: target.path,
-        session: sessionValues
+        session: storageState
       },
       "*"
     );
@@ -550,49 +552,6 @@ window.addEventListener("unhandledrejection", (event) => {
     },
     true
   );
-
-  window.__initEruda = function () {
-    if (window.__erudaLoading) return;
-
-    if (window.eruda) {
-      if (!window.__erudaInitialized) {
-        window.eruda.init();
-        window.__erudaInitialized = true;
-      }
-      return;
-    }
-
-    window.__erudaLoading = true;
-
-    const script = document.createElement("script");
-    script.src = "https://cdn.jsdelivr.net/npm/eruda";
-
-    script.onload = () => {
-      window.__erudaLoading = false;
-
-      if (window.eruda && !window.__erudaInitialized) {
-        window.eruda.init();
-        window.__erudaInitialized = true;
-      }
-    };
-
-    script.onerror = () => {
-      window.__erudaLoading = false;
-      console.error("Could not load Eruda.");
-    };
-
-    document.head.append(script);
-  };
-
-  function initializeEruda() {
-    window.__initEruda();
-
-    window.addEventListener("load", window.__initEruda, {
-      once: true
-    });
-  }
-
-  initializeEruda();
 
   let reloadSequence = 0;
   let reloadSequenceTimer = null;
@@ -626,7 +585,7 @@ window.addEventListener("unhandledrejection", (event) => {
         {
           type: "local-preview:reload",
           path: pagePath,
-          session: sessionValues
+          session: storageState
         },
         "*"
       );
@@ -955,16 +914,24 @@ window.addEventListener("unhandledrejection", (event) => {
 function rewritePreviewScript(source) {
   return rewriteNavigation(source)
     .replace(
+      /\b(?:window|globalThis)\s*\.\s*localStorage\b/g,
+      "window.__localStorage"
+    )
+    .replace(
+      /\blocalStorage\b/g,
+      "window.__localStorage"
+    )
+    .replace(
+      /\b(?:window|globalThis)\s*\.\s*sessionStorage\b/g,
+      "window.__localSessionStorage"
+    )
+    .replace(
       /\bsessionStorage\b/g,
       "window.__localSessionStorage"
     )
     .replace(
-      /window\s*\.?\s*eruda\s*\.\s*init\s*\(\s*\)\s*;?/gi,
-      "window.__initEruda?.();"
-    )
-    .replace(
-      /\beruda\s*\.\s*init\s*\(\s*\)\s*;?/gi,
-      "window.__initEruda?.();"
+      /\b(?:window\s*\.?\s*)?eruda\s*\.\s*init\s*\(\s*\)\s*;?/gi,
+      "void 0;"
     );
 }
 
@@ -1014,8 +981,6 @@ function rewriteSrcset(value, baseDirectory, folderRoot) {
     })
     .join(", ");
 }
-
-
 
 function resolveAssetUrl(value, baseDirectory, folderRoot) {
   const path = resolvePath(value, baseDirectory, folderRoot);
