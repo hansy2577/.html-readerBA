@@ -55,8 +55,12 @@ async function loadSelectedFolder(files) {
 
     previewFrame = document.createElement("iframe");
     previewFrame.title = `Preview of ${previewEntry.webkitRelativePath}`;
-    previewFrame.setAttribute("sandbox", "allow-scripts");
     previewFrame.srcdoc = html;
+    previewFrame.setAttribute(
+      "sandbox",
+      "allow-scripts allow-modals allow-forms allow-popups allow-popups-to-escape-sandbox allow-same-origin allow-downloads"
+    );
+    previewFrame.setAttribute("allow", "autoplay");
 
     output.append(previewFrame);
     document.body.classList.add("preview-mode");
